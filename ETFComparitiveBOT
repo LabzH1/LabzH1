@@ -1,0 +1,161 @@
+# Import necessary libraries
+from flask import Flask, render_template_string, request
+import yfinance as yf
+import pandas as pd
+from pyngrok import ngrok
+
+# Initialize Flask app
+app = Flask(__name__)
+
+# Function to fetch and calculate ETF data (1-year and 5-year returns)
+def get_etf_performance(ticker):
+    try:
+        etf = yf.Ticker(ticker)
+        # Fetch historical market data for the last 5 years
+        hist = etf.history(period="5y")
+
+        # Debugging: Check if the data was fetched correctly
+        print(f"Data for {ticker}:")
+        print(hist.tail())
+
+        if hist.empty:
+            return f"Data not available for {ticker}."
+
+        # Get price from 5 years ago, 1 year ago, and the current price
+        price_5_years_ago = hist['Close'][0]  # 5 years ago
+        price_1_year_ago = hist['Close'][-252]  # 1 year ago (approx. 252 trading days in a year)
+        current_price = hist['Close'][-1]  # Latest available price
+
+        # Calculate 1-year and 5-year returns
+        five_year_return = ((current_price / price_5_years_ago) - 1) * 100  # in percentage
+        one_year_return = ((current_price / price_1_year_ago) - 1) * 100  # in percentage
+
+        return {
+            'Ticker': ticker,
+            'Current Price': round(current_price, 2),
+            'Price 1 Year Ago': round(price_1_year_ago, 2),
+            'Price 5 Years Ago': round(price_5_years_ago, 2),
+            '1-Year Return (%)': round(one_year_return, 2),
+            '5-Year Return (%)': round(five_year_return, 2)
+        }
+    except Exception as e:
+        # Print error message for debugging
+        print(f"Error fetching data for {ticker}: {str(e)}")
+        return f"Error fetching data for {ticker}: {str(e)}"
+
+# Home route - Form to enter ETF tickers
+@app.route('/')
+def index():
+    return '''
+    <html>
+        <body>
+            <h1>ETF Comparison Tool</h1>
+            <form action="/compare" method="POST">
+                <label for="tickers">Enter two ETF tickers (comma separated):</label><br><br>
+                <input type="text" id="tickers" name="tickers" required><br><br>
+                <input type="submit" value="Compare ETFs">
+            </form>
+        </body>
+    </html>
+    '''
+
+# ETF comparison route - Handle form data and display comparison
+@app.route('/compare', methods=['POST'])
+def compare():
+    try:
+        # Get tickers from the form
+        tickers = request.form['tickers']
+
+        # Split input by comma and strip any whitespace
+        etf_tickers = [ticker.strip().upper() for ticker in tickers.split(',')]
+
+        # Ensure exactly two ETFs are entered
+        if len(etf_tickers) != 2:
+            return "Please enter exactly two ETF tickers."
+
+        # Fetch data for both ETFs
+        etf1_data = get_etf_performance(etf_tickers[0])
+        etf2_data = get_etf_performance(etf_tickers[1])
+
+        # If there's an error message returned, show it
+        if isinstance(etf1_data, str) or isinstance(etf2_data, str):
+            return f"Error: {etf1_data if isinstance(etf1_data, str) else ''} {etf2_data if isinstance(etf2_data, str) else ''}"
+
+        # Convert the data into DataFrames for better display
+        df_etf1 = pd.DataFrame([etf1_data])
+        df_etf2 = pd.DataFrame([etf2_data])
+
+        # Debugging: Check the comparison data
+        print(f"Comparison Data for {etf_tickers[0]} and {etf_tickers[1]}:")
+        print(df_etf1)
+        print(df_etf2)
+
+        # Comparison message (performance difference in %)
+        comparison_message = f"""
+        Over 1 year, {etf_tickers[0]} is {'up' if etf1_data['1-Year Return (%)'] > etf2_data['1-Year Return (%)'] else 'down'}
+        compared to {etf_tickers[1]} by {abs(round(etf1_data['1-Year Return (%)'] - etf2_data['1-Year Return (%)'], 2))}%.
+        <br>
+        Over 5 years, {etf_tickers[0]} is {'up' if etf1_data['5-Year Return (%)'] > etf2_data['5-Year Return (%)'] else 'down'}
+        compared to {etf_tickers[1]} by {abs(round(etf1_data['5-Year Return (%)'] - etf2_data['5-Year Return (%)'], 2))}%.
+        """
+
+        # Render results using render_template_string
+        return render_template_string('''
+        <html>
+            <body>
+                <h1>ETF Comparison Results</h1>
+
+                <h2>{{ etf1_data['Ticker'] }} vs {{ etf2_data['Ticker'] }}</h2>
+                <p>{{ comparison_message | safe }}</p>
+
+                <h3>{{ etf1_data['Ticker'] }} Performance</h3>
+                <table border="1">
+                    <tr>
+                        <th>Current Price</th><th>Price 1 Year Ago</th><th>1-Year Return (%)</th><th>Price 5 Years Ago</th><th>5-Year Return (%)</th>
+                    </tr>
+                    <tr>
+                        <td>{{ etf1_data['Current Price'] }}</td>
+                        <td>{{ etf1_data['Price 1 Year Ago'] }}</td>
+                        <td>{{ etf1_data['1-Year Return (%)'] }}</td>
+                        <td>{{ etf1_data['Price 5 Years Ago'] }}</td>
+                        <td>{{ etf1_data['5-Year Return (%)'] }}</td>
+                    </tr>
+                </table>
+
+                <h3>{{ etf2_data['Ticker'] }} Performance</h3>
+                <table border="1">
+                    <tr>
+                        <th>Current Price</th><th>Price 1 Year Ago</th><th>1-Year Return (%)</th><th>Price 5 Years Ago</th><th>5-Year Return (%)</th>
+                    </tr>
+                    <tr>
+                        <td>{{ etf2_data['Current Price'] }}</td>
+                        <td>{{ etf2_data['Price 1 Year Ago'] }}</td>
+                        <td>{{ etf2_data['1-Year Return (%)'] }}</td>
+                        <td>{{ etf2_data['Price 5 Years Ago'] }}</td>
+                        <td>{{ etf2_data['5-Year Return (%)'] }}</td>
+                    </tr>
+                </table>
+                <br><a href="/">Back to Home</a>
+            </body>
+        </html>
+        ''', etf1_data=etf1_data, etf2_data=etf2_data, comparison_message=comparison_message)
+
+    except Exception as e:
+        # Print any errors for debugging
+        print(f"Error in compare route: {str(e)}")
+        return f"Error in processing: {str(e)}"
+
+# Start Flask in Colab and expose it with ngrok
+if __name__ == '__main__':
+    try:
+        # Open a tunnel on port 5000 to the internet
+        public_url = ngrok.connect(5000)
+        print(' * Tunnel URL:', public_url)
+
+        # Run Flask app with debugging enabled
+        app.run(port=5000, debug=True)
+    except Exception as e:
+        # Print error message for debugging if Flask fails to start
+        print(f"Error starting the Flask app: {str(e)}")
+
+
